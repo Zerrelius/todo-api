@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Cloudformation Script for basic VPC with public Subnet and a S3 Bucket with Policy to acces from Ec2 and a EC2 Instance with running Python TodoAPI Application
+
+Resources: 
+  TodoAPIVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/24
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  TodoAPIPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TodoAPIVPC
+      CidrBlock: 10.0.0.10/28
+
+  TodoAPIIGW:
+    Type: AWS::EC2::InternetGateway
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref TodoAPIVPC
+      InternetGatewayId: !Ref TodoAPIIGW
+
+  TodoAPIRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TodoAPIVPC
+
+  TodoAPIRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref TodoAPIRT
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref TodoAPIIGW
+
+  routeTableAssocName:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref TodoAPIPublicSubnet
+      RouteTableId: !Ref TodoAPIRT
+
+  TodoAPISG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: TodoAPISG
+      GroupDescription: Security group for Todo API app
+      VpcId: !Ref TodoAPIVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0  
+
+  TodoAPIEC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0b76e450112e1918c
+      KeyName: EC2-KeyPair
+      InstanceType: t2.micro
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: "0"
+          SubnetId: !Ref TodoAPIPublicSubnet
+          GroupSet:
+            - !Ref TodoAPISG
+      UserData: !Base64 |
+            #!/bin/bash
+            apt-get update -y
+            apt-get upgrade -y
+            apt-get install -y python3-pip git python3.12-venv
+            cd /home/ubuntu
+            git clone https://github.com/ts-24-08/todo-api.git
+            cd todo-api
+            git checkout feature/api-gateway
+            sudo chmod +x main.py
+            python3 -m venv venv
+            source venv/bin/activate
+            pip3 install -r requirements.txt --break-system-packages --no-warn-script-location
+            fastapi run main.py
+            echo "
+              [Unit]
+              Description=FastAPI Application
+              After=network.target
+
+              [Service]
+              User=ubuntu
+              WorkingDirectory=/home/ubuntu
+              ExecStart=/home/ubuntu/venv/uvicorn main:app --host 0.0.0.0 --port 8000
+              Restart=always
+
+              [Install]
+              WantedBy=multi-user.target" >> fastapi.service
+            mv fastapi.service /etc/systemd/system
+            systemctl daemon-reload
+            systemctl start fastapi.service
+            systemctl enable fastapi.service
